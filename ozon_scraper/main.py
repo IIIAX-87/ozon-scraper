@@ -1,39 +1,56 @@
-"""Entry point: scrape Ozon seller catalog and save to xlsx."""
+"""Entry point: collect Ozon seller catalog via API and save to xlsx."""
 from __future__ import annotations
 
 import os
+import sys
 
 from dotenv import load_dotenv
 
-from export_xlsx import export_products
-from scraper import OzonScraper
+from api_client import OzonAPIClient, OzonAPIError
+from export_xlsx import export_api_products
+from ozon_api_scraper import OzonAPIScraper
 
 
 def main():
     load_dotenv()
 
-    seller_url = os.getenv("OZON_SELLER_URL")
-    output_file = os.getenv("OUTPUT_FILE", "ozon_products.xlsx")
-    max_products = int(os.getenv("MAX_PRODUCTS", "100"))
-    headless = os.getenv("HEADLESS", "true").lower() in ("1", "true", "yes")
+    client_id = os.getenv("OZON_CLIENT_ID")
+    api_key = os.getenv("OZON_API_KEY")
+    output_file = os.getenv("OUTPUT_FILE", "ozon_products_api.xlsx")
+    visibility = os.getenv("OZON_VISIBILITY", "ALL")
+    max_products = int(os.getenv("MAX_PRODUCTS", "0"))
+    batch_size = int(os.getenv("BATCH_SIZE", "500"))
+    desc_workers = int(os.getenv("DESCRIPTION_WORKERS", "20"))
 
-    scraper = OzonScraper(
-        seller_url=seller_url,
-        headless=headless,
+    if not client_id or not api_key:
+        print(
+            "ERROR: OZON_CLIENT_ID and OZON_API_KEY must be set in .env file.\n"
+            "Copy .env.example to .env and fill in your credentials."
+        )
+        sys.exit(1)
+
+    try:
+        client = OzonAPIClient(client_id=client_id, api_key=api_key)
+    except OzonAPIError as exc:
+        print(f"ERROR: {exc}")
+        sys.exit(1)
+
+    scraper = OzonAPIScraper(
+        client=client,
+        visibility=visibility,
         max_products=max_products,
+        batch_size=batch_size,
+        desc_workers=desc_workers,
     )
 
     products = scraper.run()
     print(f"Collected {len(products)} products")
 
-    if products:
-        path = export_products(products, output_file)
-        print(f"Saved to: {path}")
-    else:
-        print("No products found. Nothing to save.")
-        # Still create an empty xlsx with headers
-        path = export_products([], output_file)
-        print(f"Empty result file saved to: {path}")
+    if scraper.errors:
+        print(f"API errors/warnings: {len(scraper.errors)}")
+
+    path = export_api_products(products, output_file, errors=scraper.errors)
+    print(f"Saved to: {path}")
 
 
 if __name__ == "__main__":
