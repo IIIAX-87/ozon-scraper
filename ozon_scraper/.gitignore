@@ -1,0 +1,9 @@
+venv/
+.env
+__pycache__/
+*.pyc
+*.xlsx
+*.log
+/tmp/
+.pytest_cache/
+.mypy_cache/
