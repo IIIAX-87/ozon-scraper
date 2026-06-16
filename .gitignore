@@ -1,0 +1,110 @@
+# Promto internal Git policy
+# This repository tracks user-visible workspace files. Runtime state, secrets,
+# dependency caches, build outputs, and large binary/media files stay outside Git.
+
+# Promto/system/runtime
+.cache/
+.claude/
+.claude-session/
+.claude-sessions/
+.claude.json
+.codex-promto/
+.config/
+.daytona/
+.local/
+.npm/
+.npmrc
+.pi*
+.promto/
+.promto-pi-sidecar/
+.promto-pi-sidecar/**
+.promto-safe-bin/
+.promto-safe-bin/**
+.gitconfig
+.ssh/
+.gnupg/
+.netrc
+
+# Editor/runtime noise
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# Secrets and local credentials
+.env
+.env.*
+!.env.example
+!.env.sample
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+*.kubeconfig
+id_rsa*
+id_ed25519*
+credentials.json
+service-account*.json
+firebase-adminsdk*.json
+
+# Databases and local state
+*.sqlite
+*.sqlite3
+*.db
+*.db-journal
+*.log
+logs/
+
+# Dependencies/build/cache
+node_modules/
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.next/
+.nuxt/
+.svelte-kit/
+.astro/
+.turbo/
+.parcel-cache/
+dist/
+build/
+out/
+coverage/
+.coverage
+target/
+.gradle/
+
+# Package manager caches
+.pnpm-store/
+.yarn/cache/
+.yarn/unplugged/
+.bun/
+
+# Large/generated archives and media
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.webm
+*.zip
+*.tar
+*.gz
+*.tgz
+*.bz2
+*.xz
+*.7z
+*.rar
+*.dmg
+*.iso
+*.psd
+*.ai
+*.sketch
+*.fig
