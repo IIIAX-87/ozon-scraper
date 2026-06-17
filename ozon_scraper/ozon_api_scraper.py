@@ -172,7 +172,15 @@ class OzonAPIScraper:
         product.volume_weight = item.get("volume_weight") or product.volume_weight
 
         images = item.get("images", []) or []
-        product.images = [img.get("file_name", "") for img in images if img.get("file_name")]
+        normalized_images: List[str] = []
+        for img in images:
+            if isinstance(img, str):
+                normalized_images.append(img)
+            elif isinstance(img, dict):
+                file_name = img.get("file_name")
+                if file_name:
+                    normalized_images.append(file_name)
+        product.images = normalized_images
         if not product.primary_image and product.images:
             product.primary_image = product.images[0]
 

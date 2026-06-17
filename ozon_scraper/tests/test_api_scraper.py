@@ -63,7 +63,7 @@ class TestOzonAPIScraper(unittest.TestCase):
                         "weight_unit": "g",
                         "volume_weight": 120,
                         "images": [
-                            {"file_name": f"https://cdn.ozone.ru/{offer_id}-1.jpg", "index": 0},
+                            f"https://cdn.ozone.ru/{offer_id}-1.jpg",
                             {"file_name": f"https://cdn.ozone.ru/{offer_id}-2.jpg", "index": 1},
                         ],
                         "attributes": [
