@@ -75,7 +75,7 @@ class OzonAPIScraper:
         offer_ids = [p.offer_id for p in self.products.values() if p.offer_id]
 
         self._fetch_attributes_for_offer_ids(offer_ids)
-        self._fetch_prices_for_offer_ids(offer_ids)
+        self._fetch_prices_for_product_ids(product_ids)
         self._fetch_pictures_for_product_ids(product_ids)
         self._fetch_descriptions(product_ids)
 
@@ -110,6 +110,7 @@ class OzonAPIScraper:
                 product = ProductData(
                     product_id=product_id,
                     offer_id=str(offer_id) if offer_id is not None else "",
+                    sku=item.get("sku"),
                 )
                 self.products[product_id] = product
                 collected += 1
@@ -190,17 +191,17 @@ class OzonAPIScraper:
     # ------------------------------------------------------------------
     # 3. Prices
     # ------------------------------------------------------------------
-    def _fetch_prices_for_offer_ids(self, offer_ids: List[str]) -> None:
-        chunks = self._chunks(offer_ids, self.batch_size)
+    def _fetch_prices_for_product_ids(self, product_ids: List[int]) -> None:
+        chunks = self._chunks(product_ids, self.batch_size)
         for chunk in chunks:
             self._fetch_prices_chunk(chunk)
 
-    def _fetch_prices_chunk(self, offer_ids: List[str]) -> None:
+    def _fetch_prices_chunk(self, product_ids: List[int]) -> None:
         cursor = ""
         while True:
             try:
                 resp = self.client.get_product_prices(
-                    offer_ids=offer_ids, limit=self.batch_size, cursor=cursor
+                    product_ids=product_ids, limit=self.batch_size, cursor=cursor
                 )
             except OzonAPIError as exc:
                 self.errors.append(f"prices chunk failed: {exc}")
@@ -228,6 +229,9 @@ class OzonAPIScraper:
             )
 
         if not product:
+            self.errors.append(
+                f"price item not matched: product_id={product_id}, offer_id={offer_id}"
+            )
             return
 
         product.raw_prices = item

@@ -4,15 +4,20 @@ from __future__ import annotations
 import io
 import os
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, cast
 
 import openpyxl
 import requests
-from openpyxl.comments import Comment as XLComment
+from openpyxl.cell.cell import Cell
 from openpyxl.drawing.image import Image as OpenpyxlImage
 from openpyxl.styles import Font, PatternFill
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
+
+try:
+    from PIL import Image as PILImage  # type: ignore[import-not-found]
+except Exception:  # pragma: no cover
+    PILImage = None  # type: ignore[misc,assignment]
 
 
 def _set_header_row(ws: Worksheet, headers: List[str]) -> None:
@@ -55,22 +60,45 @@ def _download_image(
     url: str,
     session: requests.Session,
     timeout: int = 20,
+    max_retries: int = 2,
 ) -> Optional[bytes]:
     if not url:
         return None
-    try:
-        resp = session.get(url, timeout=timeout)
-        resp.raise_for_status()
-        return resp.content
-    except Exception:
-        return None
+
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/120.0.0.0 Safari/537.36"
+        ),
+        "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+        "Referer": "https://www.ozon.ru/",
+    }
+
+    for attempt in range(max_retries + 1):
+        try:
+            resp = session.get(url, headers=headers, timeout=timeout)
+            resp.raise_for_status()
+            content = resp.content
+            if content:
+                return content
+        except Exception:
+            if attempt == max_retries:
+                return None
+    return None
 
 
 def _resize_image_bytes(data: bytes, max_width: int = 200, max_height: int = 200) -> bytes:
     """Resize image keeping aspect ratio, return as PNG bytes."""
-    from PIL import Image as PILImage
+    if PILImage is None:
+        raise RuntimeError("Pillow is required for image processing")
 
     img = PILImage.open(io.BytesIO(data))
+
+    # Convert palette/transparent images to RGBA before saving as PNG.
+    if img.mode not in ("RGB", "RGBA"):
+        img = img.convert("RGBA") if img.mode == "P" and "transparency" in img.info else img.convert("RGB")
+
     img.thumbnail((max_width, max_height))
     out = io.BytesIO()
     img.save(out, format="PNG")
@@ -174,18 +202,23 @@ def export_api_products(
     for row, product in enumerate(products, 2):
         image_url = product.primary_image or (product.images[0] if product.images else "")
         image_data = _download_image(image_url, session)
+        cell = cast(Cell, ws.cell(row=row, column=photo_col_index))
         if image_data:
             try:
                 resized = _resize_image_bytes(image_data, image_max_width, image_max_height)
                 img = OpenpyxlImage(io.BytesIO(resized))
                 img.width = image_max_width
                 img.height = image_max_height
-                cell = ws.cell(row=row, column=photo_col_index)
                 ws.add_image(img, cell.coordinate)
+                cell.value = ""
             except Exception:
-                # If image processing fails, leave the URL in a comment
-                cell = ws.cell(row=row, column=photo_col_index)
-                cell.comment = XLComment(image_url, "ozon-scraper")
+                # If image processing fails, keep the URL as a clickable link in the cell.
+                cell.hyperlink = image_url  # type: ignore[assignment]
+                cell.value = image_url
+        elif image_url:
+            # Keep a clickable link if download failed.
+            cell.hyperlink = image_url  # type: ignore[assignment]
+            cell.value = image_url
 
     # Adjust column widths
     ws.column_dimensions[get_column_letter(photo_col_index)].width = int(image_max_width / 6)

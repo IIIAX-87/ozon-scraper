@@ -3,9 +3,12 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from api_client import OzonAPIClient
 from export_xlsx import export_api_products
@@ -79,10 +82,10 @@ class TestOzonAPIScraper(unittest.TestCase):
             return {"result": items}
 
         if path == "/v5/product/info/prices":
-            offer_ids = payload.get("filter", {}).get("offer_id", [])
+            product_ids = payload.get("filter", {}).get("product_id", [])
             items = []
-            for offer_id in offer_ids:
-                pid = 1001 if offer_id == "SKU-001" else 1002
+            for pid in product_ids:
+                offer_id = "SKU-001" if pid == 1001 else "SKU-002"
                 items.append(
                     {
                         "product_id": pid,
