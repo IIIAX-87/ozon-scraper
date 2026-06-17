@@ -1,10 +1,15 @@
-"""Export API-collected Ozon products to an .xlsx file."""
+"""Export API-collected Ozon products to a single-sheet .xlsx file with images."""
 from __future__ import annotations
 
+import io
 import os
+import re
 from typing import Any, Dict, List, Optional
 
-from openpyxl import Workbook
+import openpyxl
+import requests
+from openpyxl.comments import Comment as XLComment
+from openpyxl.drawing.image import Image as OpenpyxlImage
 from openpyxl.styles import Font, PatternFill
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
@@ -19,84 +24,71 @@ def _set_header_row(ws: Worksheet, headers: List[str]) -> None:
         cell.font = header_font
 
 
-def _autofit_columns(ws: Worksheet, headers: List[str], rows: int) -> None:
-    for col in range(1, len(headers) + 1):
-        max_length = len(headers[col - 1])
-        for row in range(2, rows + 2):
-            value = ws.cell(row=row, column=col).value
-            if value is not None:
-                max_length = max(max_length, len(str(value)))
-        ws.column_dimensions[get_column_letter(col)].width = min(max_length + 2, 80)
+def _format_attributes(
+    attributes: List[Dict[str, Any]],
+    complex_attributes: List[Dict[str, Any]],
+) -> str:
+    """Convert attributes to a readable string."""
+    parts: List[str] = []
 
+    for attr in attributes or []:
+        values = [str(v.get("value", "")) for v in attr.get("values", []) or []]
+        if values:
+            parts.append(f"{attr.get('attribute_id')}: {', '.join(values)}")
 
-def _collect_attribute_rows(
-    products: List[Any],
-) -> List[Dict[str, Any]]:
-    rows: List[Dict[str, Any]] = []
-    for product in products:
-        pid = product.product_id
-        offer_id = product.offer_id
-
-        def add_attr(attr: Dict[str, Any], complex_idx: Optional[int] = None) -> None:
-            attr_id = attr.get("attribute_id")
-            complex_id = attr.get("complex_id")
-            for value in attr.get("values", []) or []:
-                rows.append(
-                    {
-                        "product_id": pid,
-                        "offer_id": offer_id,
-                        "attribute_id": attr_id,
-                        "complex_id": complex_id,
-                        "complex_index": complex_idx,
-                        "dictionary_value_id": value.get("dictionary_value_id"),
-                        "value": value.get("value"),
-                    }
+    for cidx, complex_attr in enumerate(complex_attributes or []):
+        for attr in complex_attr.get("attributes", []) or []:
+            values = [str(v.get("value", "")) for v in attr.get("values", []) or []]
+            if values:
+                parts.append(
+                    f"complex[{cidx}].{attr.get('attribute_id')}: {', '.join(values)}"
                 )
 
-        for attr in product.attributes:
-            add_attr(attr)
-
-        for cidx, complex_attr in enumerate(product.complex_attributes or []):
-            for attr in complex_attr.get("attributes", []) or []:
-                add_attr(attr, complex_idx=cidx)
-
-    return rows
+    return "\n".join(parts)
 
 
-def _collect_image_rows(products: List[Any]) -> List[Dict[str, Any]]:
-    rows: List[Dict[str, Any]] = []
-    for product in products:
-        for idx, url in enumerate(product.images or []):
-            rows.append(
-                {
-                    "product_id": product.product_id,
-                    "offer_id": product.offer_id,
-                    "index": idx,
-                    "url": url,
-                    "is_primary": idx == 0,
-                }
-            )
-    return rows
+def _sanitize_filename(name: str) -> str:
+    return re.sub(r"[^\w\-_. ]", "_", name).strip() or "image"
+
+
+def _download_image(
+    url: str,
+    session: requests.Session,
+    timeout: int = 20,
+) -> Optional[bytes]:
+    if not url:
+        return None
+    try:
+        resp = session.get(url, timeout=timeout)
+        resp.raise_for_status()
+        return resp.content
+    except Exception:
+        return None
+
+
+def _resize_image_bytes(data: bytes, max_width: int = 200, max_height: int = 200) -> bytes:
+    """Resize image keeping aspect ratio, return as PNG bytes."""
+    from PIL import Image as PILImage
+
+    img = PILImage.open(io.BytesIO(data))
+    img.thumbnail((max_width, max_height))
+    out = io.BytesIO()
+    img.save(out, format="PNG")
+    return out.getvalue()
 
 
 def export_api_products(
     products: List[Any],
     output_path: Optional[str] = None,
     errors: Optional[List[str]] = None,
+    image_column: str = "Фото",
+    image_max_width: int = 200,
+    image_max_height: int = 200,
 ) -> str:
+    """Export products to a single worksheet with inline images and all attributes."""
     output_path = output_path or os.getenv("OUTPUT_FILE", "ozon_products_api.xlsx")
 
-    wb = Workbook()
-
-    # ------------------------------------------------------------------
-    # Sheet: Товары
-    # ------------------------------------------------------------------
-    ws_products = wb.active
-    if ws_products is None:
-        raise RuntimeError("Failed to create workbook sheet")
-    ws_products.title = "Товары"
-
-    product_headers = [
+    headers = [
         "product_id",
         "offer_id",
         "sku",
@@ -124,97 +116,90 @@ def export_api_products(
         "weight",
         "weight_unit",
         "volume_weight",
-        "primary_image",
-        "images_count",
-        "attributes_count",
+        image_column,
+        "attributes",
     ]
-    _set_header_row(ws_products, product_headers)
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    if ws is None:
+        raise RuntimeError("Failed to create workbook sheet")
+    ws.title = "Товары"
+
+    _set_header_row(ws, headers)
+
+    photo_col_index = headers.index(image_column) + 1
+    row_height_pt = int(image_max_height * 0.75) + 6
+
+    session = requests.Session()
 
     for row, product in enumerate(products, 2):
-        ws_products.cell(row=row, column=1, value=product.product_id)
-        ws_products.cell(row=row, column=2, value=product.offer_id)
-        ws_products.cell(row=row, column=3, value=product.sku)
-        ws_products.cell(row=row, column=4, value=product.name)
-        ws_products.cell(row=row, column=5, value=product.barcode)
-        ws_products.cell(row=row, column=6, value=product.category_id)
-        ws_products.cell(row=row, column=7, value=product.description_category_id)
-        ws_products.cell(row=row, column=8, value=product.type_id)
-        ws_products.cell(row=row, column=9, value=product.description)
-        ws_products.cell(row=row, column=10, value=product.price)
-        ws_products.cell(row=row, column=11, value=product.old_price)
-        ws_products.cell(row=row, column=12, value=product.retail_price)
-        ws_products.cell(row=row, column=13, value=product.marketing_price)
-        ws_products.cell(row=row, column=14, value=product.min_price)
-        ws_products.cell(row=row, column=15, value=product.currency_code)
-        ws_products.cell(row=row, column=16, value=product.vat)
-        ws_products.cell(row=row, column=17, value=product.status)
-        ws_products.cell(row=row, column=18, value=product.visibility)
-        ws_products.cell(row=row, column=19, value=product.archived)
-        ws_products.cell(row=row, column=20, value=product.discounted)
-        ws_products.cell(row=row, column=21, value=product.height)
-        ws_products.cell(row=row, column=22, value=product.depth)
-        ws_products.cell(row=row, column=23, value=product.width)
-        ws_products.cell(row=row, column=24, value=product.dimension_unit)
-        ws_products.cell(row=row, column=25, value=product.weight)
-        ws_products.cell(row=row, column=26, value=product.weight_unit)
-        ws_products.cell(row=row, column=27, value=product.volume_weight)
-        ws_products.cell(row=row, column=28, value=product.primary_image)
-        ws_products.cell(row=row, column=29, value=len(product.images or []))
-        ws_products.cell(
-            row=row,
-            column=30,
-            value=len(product.attributes or []) + len(product.complex_attributes or []),
-        )
+        ws.cell(row=row, column=1, value=product.product_id)
+        ws.cell(row=row, column=2, value=product.offer_id)
+        ws.cell(row=row, column=3, value=product.sku)
+        ws.cell(row=row, column=4, value=product.name)
+        ws.cell(row=row, column=5, value=product.barcode)
+        ws.cell(row=row, column=6, value=product.category_id)
+        ws.cell(row=row, column=7, value=product.description_category_id)
+        ws.cell(row=row, column=8, value=product.type_id)
+        ws.cell(row=row, column=9, value=product.description)
+        ws.cell(row=row, column=10, value=product.price)
+        ws.cell(row=row, column=11, value=product.old_price)
+        ws.cell(row=row, column=12, value=product.retail_price)
+        ws.cell(row=row, column=13, value=product.marketing_price)
+        ws.cell(row=row, column=14, value=product.min_price)
+        ws.cell(row=row, column=15, value=product.currency_code)
+        ws.cell(row=row, column=16, value=product.vat)
+        ws.cell(row=row, column=17, value=product.status)
+        ws.cell(row=row, column=18, value=product.visibility)
+        ws.cell(row=row, column=19, value=product.archived)
+        ws.cell(row=row, column=20, value=product.discounted)
+        ws.cell(row=row, column=21, value=product.height)
+        ws.cell(row=row, column=22, value=product.depth)
+        ws.cell(row=row, column=23, value=product.width)
+        ws.cell(row=row, column=24, value=product.dimension_unit)
+        ws.cell(row=row, column=25, value=product.weight)
+        ws.cell(row=row, column=26, value=product.weight_unit)
+        ws.cell(row=row, column=27, value=product.volume_weight)
 
-    _autofit_columns(ws_products, product_headers, len(products))
+        # Attributes column
+        attr_text = _format_attributes(product.attributes, product.complex_attributes)
+        ws.cell(row=row, column=29, value=attr_text)
 
-    # ------------------------------------------------------------------
-    # Sheet: Атрибуты
-    # ------------------------------------------------------------------
-    ws_attrs = wb.create_sheet(title="Атрибуты")
-    attr_rows = _collect_attribute_rows(products)
-    attr_headers = [
-        "product_id",
-        "offer_id",
-        "attribute_id",
-        "complex_id",
-        "complex_index",
-        "dictionary_value_id",
-        "value",
-    ]
-    _set_header_row(ws_attrs, attr_headers)
+        # Image column (keep empty; image anchored later)
+        ws.cell(row=row, column=photo_col_index, value="")
+        ws.row_dimensions[row].height = row_height_pt
 
-    for row, attr in enumerate(attr_rows, 2):
-        ws_attrs.cell(row=row, column=1, value=attr["product_id"])
-        ws_attrs.cell(row=row, column=2, value=attr["offer_id"])
-        ws_attrs.cell(row=row, column=3, value=attr["attribute_id"])
-        ws_attrs.cell(row=row, column=4, value=attr["complex_id"])
-        ws_attrs.cell(row=row, column=5, value=attr["complex_index"])
-        ws_attrs.cell(row=row, column=6, value=attr["dictionary_value_id"])
-        ws_attrs.cell(row=row, column=7, value=attr["value"])
+    # Download and insert images
+    for row, product in enumerate(products, 2):
+        image_url = product.primary_image or (product.images[0] if product.images else "")
+        image_data = _download_image(image_url, session)
+        if image_data:
+            try:
+                resized = _resize_image_bytes(image_data, image_max_width, image_max_height)
+                img = OpenpyxlImage(io.BytesIO(resized))
+                img.width = image_max_width
+                img.height = image_max_height
+                cell = ws.cell(row=row, column=photo_col_index)
+                ws.add_image(img, cell.coordinate)
+            except Exception:
+                # If image processing fails, leave the URL in a comment
+                cell = ws.cell(row=row, column=photo_col_index)
+                cell.comment = XLComment(image_url, "ozon-scraper")
 
-    _autofit_columns(ws_attrs, attr_headers, len(attr_rows))
+    # Adjust column widths
+    ws.column_dimensions[get_column_letter(photo_col_index)].width = int(image_max_width / 6)
+    for col in range(1, len(headers) + 1):
+        if col == photo_col_index:
+            continue
+        max_length = len(headers[col - 1])
+        for row in range(2, len(products) + 2):
+            value = ws.cell(row=row, column=col).value
+            if value is not None:
+                max_length = max(max_length, len(str(value)))
+        ws.column_dimensions[get_column_letter(col)].width = min(max_length + 2, 60)
 
-    # ------------------------------------------------------------------
-    # Sheet: Изображения
-    # ------------------------------------------------------------------
-    ws_images = wb.create_sheet(title="Изображения")
-    image_rows = _collect_image_rows(products)
-    image_headers = ["product_id", "offer_id", "index", "url", "is_primary"]
-    _set_header_row(ws_images, image_headers)
-
-    for row, img in enumerate(image_rows, 2):
-        ws_images.cell(row=row, column=1, value=img["product_id"])
-        ws_images.cell(row=row, column=2, value=img["offer_id"])
-        ws_images.cell(row=row, column=3, value=img["index"])
-        ws_images.cell(row=row, column=4, value=img["url"])
-        ws_images.cell(row=row, column=5, value=img["is_primary"])
-
-    _autofit_columns(ws_images, image_headers, len(image_rows))
-
-    # ------------------------------------------------------------------
-    # Sheet: Ошибки
-    # ------------------------------------------------------------------
+    # Optional errors sheet
     if errors:
         ws_errors = wb.create_sheet(title="Ошибки")
         error_headers = ["#", "message"]
@@ -222,9 +207,16 @@ def export_api_products(
         for row, err in enumerate(errors, 2):
             ws_errors.cell(row=row, column=1, value=row - 1)
             ws_errors.cell(row=row, column=2, value=err)
-        _autofit_columns(ws_errors, error_headers, len(errors))
+        for col in range(1, 3):
+            max_length = len(error_headers[col - 1])
+            for row in range(2, len(errors) + 2):
+                value = ws_errors.cell(row=row, column=col).value
+                if value is not None:
+                    max_length = max(max_length, len(str(value)))
+            ws_errors.column_dimensions[get_column_letter(col)].width = min(max_length + 2, 80)
 
     wb.save(output_path)
+    session.close()
     return os.path.abspath(output_path)
 
 
@@ -235,7 +227,7 @@ def export_products(
     """Legacy compatibility for web-scraper products."""
     output_path = output_path or os.getenv("OUTPUT_FILE", "ozon_products.xlsx")
 
-    wb = Workbook()
+    wb = openpyxl.Workbook()
     ws = wb.active
     if ws is None:
         raise RuntimeError("Failed to create workbook sheet")
